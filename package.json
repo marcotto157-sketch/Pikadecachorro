@@ -1,0 +1,18 @@
+{
+  "name": "cartpanda-mcp",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "2.0.0",
+    "agents": "latest",
+    "zod": "latest"
+  },
+  "devDependencies": {
+    "wrangler": "latest"
+  }
+}
