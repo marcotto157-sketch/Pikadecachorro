@@ -5,6 +5,7 @@ import { z } from "zod";
 type Env = {
   CARTPANDA_STORE?: string;
   CARTPANDA_TOKEN?: string;
+  CARTPANDA_API_KEY?: string;
 };
 
 function normalizeStore(value?: string) {
@@ -14,12 +15,16 @@ function normalizeStore(value?: string) {
     .replace(/\/+$/, "");
 }
 
+function getToken(env: Env) {
+  return String(env.CARTPANDA_API_KEY || env.CARTPANDA_TOKEN || "").trim();
+}
+
 async function tryCartPandaGet(env: Env, path: string) {
   const store = normalizeStore(env.CARTPANDA_STORE);
-  const token = String(env.CARTPANDA_TOKEN || "").trim();
+  const token = getToken(env);
 
   if (!store) throw new Error("CARTPANDA_STORE não configurado no Cloudflare Worker.");
-  if (!token) throw new Error("CARTPANDA_TOKEN não configurado no Cloudflare Worker.");
+  if (!token) throw new Error("CARTPANDA_API_KEY/CARTPANDA_TOKEN não configurado no Cloudflare Worker.");
 
   const safePath = path.startsWith("/") ? path : `/${path}`;
   if (/^https?:\/\//i.test(safePath)) throw new Error("Use apenas um caminho relativo da API.");
@@ -55,7 +60,7 @@ async function tryCartPandaGet(env: Env, path: string) {
 function createServer(env: Env) {
   const server = new McpServer({
     name: "CartPanda MT Sports",
-    version: "1.0.0",
+    version: "1.1.0",
   });
 
   server.registerTool(
@@ -73,7 +78,7 @@ function createServer(env: Env) {
               mcp: "online",
               store: normalizeStore(env.CARTPANDA_STORE) || null,
               storeConfigured: Boolean(env.CARTPANDA_STORE),
-              tokenConfigured: Boolean(env.CARTPANDA_TOKEN),
+              tokenConfigured: Boolean(getToken(env)),
             },
             null,
             2,
