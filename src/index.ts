@@ -23,43 +23,48 @@ function getToken(env: Env) {
 async function tryCartPandaGet(env: Env, path: string) {
   const store = normalizeStore(env.CARTPANDA_STORE);
   const token = getToken(env);
-
-  if (!store) throw new Error("CARTPANDA_STORE não configurado no Cloudflare Worker.");
-  if (!token) throw new Error("CARTPANDA_API_KEY/CARTPANDA_TOKEN não configurado no Cloudflare Worker.");
-
   if (!/^[a-z0-9-]+\.mycartpanda\.com$/i.test(store)) throw new Error("Domínio da loja inválido.");
-  const safePath = path.startsWith("/") ? path : `/${path}`;
-  const target = new URL(safePath, `https://${store}`);
-  if (target.origin !== `https://${store}` || !/^\/api\/(?:v[13]\/)?[a-z]/i.test(target.pathname) || target.username || target.password || target.hash) {
-    throw new Error("Use apenas um caminho relativo da API da loja.");
+  if (!token) throw new Error("CARTPANDA_API_KEY não configurado no Cloudflare Worker.");
+
+  // Preserve the existing /api/v3/orders input format while using the official API.
+  const relative = path.replace(/^\/api\/(?:v[13]\/)?/, "/");
+  if (!/^\/?[a-z][a-z0-9_/-]*(?:\?[^#\\\r\n]*)?$/i.test(relative)) {
+    throw new Error("Use apenas um caminho relativo da API, como /orders/count.");
   }
-
-  const candidates = [
-    { url: `https://${store}${safePath}`, headers: { Authorization: `Bearer ${token}`, Accept: "application/json" } },
-    { url: `https://${store}${safePath}`, headers: { "X-API-Token": token, Accept: "application/json" } },
-    { url: `https://${store}${safePath}`, headers: { token, Accept: "application/json" } },
-  ];
-
-  const attempts: Array<Record<string, unknown>> = [];
-
-  for (const candidate of candidates) {
-    try {
-      const response = await fetch(candidate.url, { method: "GET", headers: candidate.headers, redirect: "manual", signal: AbortSignal.timeout(15000) });
-      const text = await response.text();
-      let parsed: unknown = text;
-      try { parsed = JSON.parse(text); } catch {}
-
-      attempts.push({ url: candidate.url, status: response.status });
-
-      if (response.ok && response.headers.get("content-type")?.includes("application/json")) {
-        return { ok: true, status: response.status, url: candidate.url, data: parsed, attempts };
-      }
-    } catch (error) {
-      attempts.push({ error: String(error) });
+  const slug = store.split(".")[0];
+  const base = `https://accounts.cartpanda.com/api/v3/${slug}/`;
+  const target = new URL(relative.replace(/^\//, ""), base);
+  if (!target.href.startsWith(base)) throw new Error("Caminho fora da API da loja.");
+  const response = await fetch(target, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+    redirect: "manual",
+    signal: AbortSignal.timeout(15000),
+  });
+  if (!response.ok || !response.headers.get("content-type")?.includes("application/json")) {
+    await response.body?.cancel();
+    return { ok: false, status: response.status, error: "A API da CartPanda não retornou uma resposta JSON de sucesso." };
+  }
+  const reader = response.body?.getReader();
+  if (!reader) return { ok: false, status: response.status, error: "Resposta vazia." };
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > 2 * 1024 * 1024) {
+      await reader.cancel();
+      return { ok: false, status: 413, error: "Resposta muito grande. Use paginação." };
     }
+    chunks.push(value);
   }
-
-  return { ok: false, attempts };
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
+  const text = new TextDecoder().decode(bytes).replaceAll(token, "[REDACTED]");
+  try { return { ok: true, status: response.status, data: JSON.parse(text) }; }
+  catch { return { ok: false, status: response.status, error: "JSON inválido." }; }
 }
 
 function createServer(env: Env) {
@@ -113,23 +118,14 @@ function createServer(env: Env) {
   server.registerTool(
     "cartpanda_testar_pedidos",
     {
-      description: "Testa os caminhos comuns de pedidos da CartPanda e retorna o primeiro que responder corretamente.",
+      description: "Verifica o acesso à CartPanda consultando apenas a contagem de pedidos.",
       inputSchema: {},
     },
     async () => {
-      const paths = ["/api/v3/orders", "/api/orders", "/api/v1/orders"];
-      const results = [];
-
-      for (const path of paths) {
-        const result = await tryCartPandaGet(env, path);
-        results.push({ path, ...result });
-        if (result.ok) break;
-      }
-
-      const ok = results.some((item) => item.ok);
+      const result = await tryCartPandaGet(env, "/orders/count");
       return {
-        content: [{ type: "text", text: JSON.stringify({ ok, results }, null, 2) }],
-        isError: !ok,
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        isError: !result.ok,
       };
     },
   );
