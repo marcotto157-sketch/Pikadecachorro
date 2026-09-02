@@ -6,6 +6,7 @@ type Env = {
   CARTPANDA_STORE?: string;
   CARTPANDA_TOKEN?: string;
   CARTPANDA_API_KEY?: string;
+  MCP_AUTH_TOKEN?: string;
 };
 
 function normalizeStore(value?: string) {
@@ -26,8 +27,12 @@ async function tryCartPandaGet(env: Env, path: string) {
   if (!store) throw new Error("CARTPANDA_STORE não configurado no Cloudflare Worker.");
   if (!token) throw new Error("CARTPANDA_API_KEY/CARTPANDA_TOKEN não configurado no Cloudflare Worker.");
 
+  if (!/^[a-z0-9-]+\.mycartpanda\.com$/i.test(store)) throw new Error("Domínio da loja inválido.");
   const safePath = path.startsWith("/") ? path : `/${path}`;
-  if (/^https?:\/\//i.test(safePath)) throw new Error("Use apenas um caminho relativo da API.");
+  const target = new URL(safePath, `https://${store}`);
+  if (target.origin !== `https://${store}` || !/^\/api\/(?:v[13]\/)?[a-z]/i.test(target.pathname) || target.username || target.password || target.hash) {
+    throw new Error("Use apenas um caminho relativo da API da loja.");
+  }
 
   const candidates = [
     { url: `https://${store}${safePath}`, headers: { Authorization: `Bearer ${token}`, Accept: "application/json" } },
@@ -39,14 +44,14 @@ async function tryCartPandaGet(env: Env, path: string) {
 
   for (const candidate of candidates) {
     try {
-      const response = await fetch(candidate.url, { method: "GET", headers: candidate.headers });
+      const response = await fetch(candidate.url, { method: "GET", headers: candidate.headers, redirect: "manual", signal: AbortSignal.timeout(15000) });
       const text = await response.text();
       let parsed: unknown = text;
       try { parsed = JSON.parse(text); } catch {}
 
       attempts.push({ url: candidate.url, status: response.status });
 
-      if (response.ok) {
+      if (response.ok && response.headers.get("content-type")?.includes("application/json")) {
         return { ok: true, status: response.status, url: candidate.url, data: parsed, attempts };
       }
     } catch (error) {
@@ -133,7 +138,7 @@ function createServer(env: Env) {
 }
 
 export default {
-  fetch(request: Request, env: Env, ctx: ExecutionContext) {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext) {
     const url = new URL(request.url);
 
     if (url.pathname === "/") {
@@ -141,6 +146,17 @@ export default {
     }
 
     if (url.pathname === "/mcp") {
+      if (!env.MCP_AUTH_TOKEN) {
+        return new Response("MCP authentication is not configured.", { status: 503 });
+      }
+      const expected = new TextEncoder().encode(`Bearer ${env.MCP_AUTH_TOKEN}`);
+      const supplied = new TextEncoder().encode(request.headers.get("Authorization") || "");
+      if (expected.length !== supplied.length || !crypto.subtle.timingSafeEqual(expected, supplied)) {
+        return new Response("Unauthorized", {
+          status: 401,
+          headers: { "WWW-Authenticate": 'Bearer realm="cartpandamcp"', "Cache-Control": "no-store" },
+        });
+      }
       return createMcpHandler(() => createServer(env))(request, env, ctx);
     }
 
