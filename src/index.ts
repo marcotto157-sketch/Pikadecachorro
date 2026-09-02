@@ -26,13 +26,13 @@ async function tryCartPandaGet(env: Env, path: string) {
   if (!/^[a-z0-9-]+\.mycartpanda\.com$/i.test(store)) throw new Error("Domínio da loja inválido.");
   if (!token) throw new Error("CARTPANDA_API_KEY não configurado no Cloudflare Worker.");
 
-  // Preserve the existing /api/v3/orders input format while using the official API.
+  // Accept legacy /api/v1 and /api/v3 inputs, then call the current official store API.
   const relative = path.replace(/^\/api\/(?:v[13]\/)?/, "/");
   if (!/^\/?[a-z][a-z0-9_/-]*(?:\?[^#\\\r\n]*)?$/i.test(relative)) {
     throw new Error("Use apenas um caminho relativo da API, como /orders/count.");
   }
   const slug = store.split(".")[0];
-  const base = `https://accounts.cartpanda.com/api/v3/${slug}/`;
+  const base = `https://accounts.cartpanda.com/api/${slug}/`;
   const target = new URL(relative.replace(/^\//, ""), base);
   if (!target.href.startsWith(base)) throw new Error("Caminho fora da API da loja.");
   const response = await fetch(target, {
@@ -70,7 +70,7 @@ async function tryCartPandaGet(env: Env, path: string) {
 function createServer(env: Env) {
   const server = new McpServer({
     name: "CartPanda MT Sports",
-    version: "1.1.0",
+    version: "1.2.0",
   });
 
   server.registerTool(
@@ -103,7 +103,7 @@ function createServer(env: Env) {
     {
       description: "Faz uma consulta GET de leitura na API da CartPanda usando as credenciais guardadas no Cloudflare.",
       inputSchema: {
-        path: z.string().describe("Caminho relativo da API, por exemplo /api/v3/orders"),
+        path: z.string().describe("Caminho relativo da API, por exemplo /orders ou /products"),
       },
     },
     async ({ path }) => {
